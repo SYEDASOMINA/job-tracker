@@ -164,3 +164,7 @@ STATIC_URL = '/static/'
 import dj_database_url
 if os.environ.get('DATABASE_URL'):
     DATABASES['default'] = dj_database_url.parse(os.environ.get('DATABASE_URL'))
+
+CORS_ALLOWED_ORIGINS += [
+    "https://job-tracker-six-orcin.vercel.app",
+]
