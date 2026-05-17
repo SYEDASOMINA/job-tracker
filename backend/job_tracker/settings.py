@@ -155,3 +155,8 @@ CSRF_TRUSTED_ORIGINS = ['http://localhost:3000', 'http://localhost:5173']
 CORS_ALLOW_CREDENTIALS = True
 CSRF_COOKIE_HTTPONLY = False
 CSRF_COOKIE_SAMESITE = 'Lax'
+
+import os
+ALLOWED_HOSTS = ['*']
+STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
+STATIC_URL = '/static/'
