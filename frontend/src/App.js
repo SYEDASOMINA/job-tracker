@@ -1,72 +1,41 @@
 import { useState, useMemo, useEffect, useRef } from "react";
 
-// ─── Constants ────────────────────────────────────────────────────────────────
-// ─── API helpers ──────────────────────────────────────────────────────────────
+// ─── API Config ───────────────────────────────────────────────────────────────
 const API = "https://job-tracker-a7yr.onrender.com";
+let accessToken = null;
 
-async function getCsrf() {
-  try {
-    // First try to get CSRF token from the dedicated endpoint
-    const res = await fetch(`${API}/api/auth/csrf/`, { credentials: 'include' });
-    const data = await res.json();
-    if (data.csrfToken) {
-      return data.csrfToken;
-    }
-  } catch (e) {
-    console.log('Could not get CSRF from endpoint:', e);
-  }
-  
-  // Fallback: try to extract from cookie
-  const name = 'csrftoken';
-  let cookieValue = null;
-  if (document.cookie && document.cookie !== '') {
-    const cookies = document.cookie.split(';');
-    for (let i = 0; i < cookies.length; i++) {
-      const cookie = cookies[i].trim();
-      if (cookie.substring(0, name.length + 1) === (name + '=')) {
-        cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
-        break;
-      }
-    }
-  }
-  return cookieValue || '';
-}
-
-async function apiLogin(username, password) {
-  const csrf = await getCsrf();
+async function silentLogin() {
   const res = await fetch(`${API}/api/auth/login/`, {
     method: 'POST',
-    credentials: 'include',
-    headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrf },
-    body: JSON.stringify({ username, password }),
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: 'appuser', password: 'appuser123' }),
   });
   const data = await res.json();
-  if (!res.ok) {
-    console.error('Login failed:', data);
-    throw new Error(data.error || 'Login failed');
+  if (data.access) {
+    accessToken = data.access;
+    console.log('Logged in as:', data.username);
+  } else {
+    throw new Error('Login failed');
   }
-  return data;
 }
 
 async function apiFetch(path, options = {}) {
-  const csrf = await getCsrf();
-  const headers = { ...options.headers, 'X-CSRFToken': csrf };
+  if (!accessToken) await silentLogin();
+  const headers = { ...options.headers, 'Authorization': `Bearer ${accessToken}` };
   if (!(options.body instanceof FormData)) {
-    headers['Content-Type'] = headers['Content-Type'] || 'application/json';
+    headers['Content-Type'] = 'application/json';
   }
-
-  const res = await fetch(`${API}${path}`, {
-    ...options,
-    credentials: 'include',
-    headers,
-  });
-
+  const res = await fetch(`${API}${path}`, { ...options, headers });
   if (res.status === 204) return {};
   if (!res.ok) {
     const err = await res.json();
     throw new Error(err.detail || `API error: ${res.status}`);
   }
   return res.json();
+}
+
+async function ensureLoggedIn() {
+  await silentLogin();
 }
 
 function toClientEntry(raw) {
@@ -112,27 +81,7 @@ async function loadEntries(setEntries) {
   }
 }
 
-async function ensureLoggedIn() {
-  try {
-    // Check if already logged in
-    const me = await apiFetch('/api/auth/me/');
-    if (me.username) {
-      console.log('Already logged in as:', me.username);
-      return;
-    }
-  } catch (e) {
-    console.log('Not logged in, attempting login...');
-  }
-  
-  // Try to log in
-  try {
-    const loginRes = await apiLogin('appuser', 'appuser123');
-    console.log('Logged in:', loginRes);
-  } catch (error) {
-    console.error('Login failed:', error);
-    throw error;
-  }
-}
+// ─── Constants ────────────────────────────────────────────────────────────────
 const STATUS   = ["Applied", "Interview", "Offer", "Rejected"];
 const PRIORITY = ["Low", "Medium", "High"];
 
@@ -495,7 +444,6 @@ function ListView({ filtered, search, setSearch, filter, setFilter, counts, sort
   );
 }
 
-// ─── Reusable components ──────────────────────────────────────────────────────────────
 function Badge({ status, dark }) {
   const st = STATUS_STYLE[status];
   return (
@@ -519,12 +467,11 @@ function Avatar({ name }) {
   );
 }
 
-// ─── Main App ─────────────────────────────────────────────────────────────────
 export default function App() {
   const [entries,  setEntries]  = useState([]);
   const [loading,  setLoading]  = useState(true);
   const [dark,     setDark]     = useState(false);
-  const [view,     setView]     = useState("list");      // list | kanban | charts
+  const [view,     setView]     = useState("list");
   const [filter,   setFilter]   = useState("All");
   const [search,   setSearch]   = useState("");
   const [sort,     setSort]     = useState("newest");
@@ -551,18 +498,15 @@ export default function App() {
     init();
   }, []);
 
-  // ── Reminder check ──────────────────────────────────────────────────────────
   useEffect(() => {
     const upcoming = getUpcoming(entries);
     if (upcoming.length > 0) {
-      // Browser notification if permitted
       if ("Notification" in window && Notification.permission === "default") {
         Notification.requestPermission();
       }
     }
   }, [entries]);
 
-  // ── Form helpers ────────────────────────────────────────────────────────────
   const upd  = (k, v) => setForm(f => ({ ...f, [k]: v }));
   const updE = (k, v) => setEditData(d => ({ ...d, [k]: v }));
 
@@ -573,42 +517,16 @@ export default function App() {
 
   async function addEntry() {
     if (!form.name || !form.company || !form.job) { alert("Fill in name, company & job title."); return; }
-
     try {
       const formData = new FormData();
       Object.entries(toServerPayload(form)).forEach(([key, value]) => {
-        if (value !== null && value !== undefined) {
-          formData.append(key, value);
-        }
+        if (value !== null && value !== undefined) formData.append(key, value);
       });
-      if (fileRef.current?.files[0]) {
-        formData.append('resume', fileRef.current.files[0]);
-      }
-
-      const csrf = await getCsrf();
-      console.log('CSRF token:', csrf ? csrf.substring(0, 10) + '...' : 'NOT FOUND');
-      console.log('Submitting form with data:', toServerPayload(form));
-
-      const res = await fetch(`${API}/api/applications/`, {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'X-CSRFToken': csrf },
-        body: formData,
-      });
-
-      console.log('Response status:', res.status);
-
-      if (!res.ok) {
-        const text = await res.text();
-        console.error(`POST failed: ${res.status}`, text);
-        alert(`Error: ${res.status} ${res.statusText}\n\n${text.substring(0, 200)}`);
-        return;
-      }
-
+      if (fileRef.current?.files[0]) formData.append('resume', fileRef.current.files[0]);
+      await apiFetch('/api/applications/', { method: 'POST', body: formData });
       await loadEntries(setEntries);
       setForm(EMPTY_FORM);
       setShowForm(false);
-      alert('Application added successfully!');
     } catch (error) {
       console.error('addEntry error:', error);
       alert(`Error: ${error.message}`);
@@ -617,16 +535,7 @@ export default function App() {
 
   async function deleteEntry(id) {
     try {
-      const csrf = await getCsrf();
-      const res = await fetch(`${API}/api/applications/${id}/`, {
-        method: 'DELETE',
-        credentials: 'include',
-        headers: { 'X-CSRFToken': csrf },
-      });
-      if (!res.ok) {
-        console.error(`DELETE failed: ${res.status}`);
-        return;
-      }
+      await apiFetch(`/api/applications/${id}/`, { method: 'DELETE' });
       await loadEntries(setEntries);
     } catch (error) {
       console.error('deleteEntry error:', error);
@@ -637,17 +546,10 @@ export default function App() {
     try {
       const entry = entries.find(e => e.id === id);
       if (!entry) return;
-      const csrf = await getCsrf();
-      const res = await fetch(`${API}/api/applications/${id}/`, {
+      await apiFetch(`/api/applications/${id}/`, {
         method: 'PATCH',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrf },
         body: JSON.stringify({ starred: !entry.starred }),
       });
-      if (!res.ok) {
-        console.error(`PATCH failed: ${res.status}`);
-        return;
-      }
       await loadEntries(setEntries);
     } catch (error) {
       console.error('toggleStar error:', error);
@@ -658,18 +560,10 @@ export default function App() {
 
   async function saveEdit() {
     try {
-      const csrf = await getCsrf();
-      const res = await fetch(`${API}/api/applications/${editId}/`, {
+      await apiFetch(`/api/applications/${editId}/`, {
         method: 'PUT',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrf },
         body: JSON.stringify(toServerPayload(editData)),
       });
-      if (!res.ok) {
-        console.error(`PUT failed: ${res.status}`);
-        alert(`Error: ${res.status} - Could not save changes`);
-        return;
-      }
       setEditId(null);
       await loadEntries(setEntries);
     } catch (error) {
@@ -678,21 +572,13 @@ export default function App() {
     }
   }
 
-  // ── Drag & drop (Kanban) ────────────────────────────────────────────────────
   async function onDrop(status) {
     if (dragId == null) return;
     try {
-      const csrf = await getCsrf();
-      const res = await fetch(`${API}/api/applications/${dragId}/`, {
+      await apiFetch(`/api/applications/${dragId}/`, {
         method: 'PATCH',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrf },
         body: JSON.stringify({ status }),
       });
-      if (!res.ok) {
-        console.error(`PATCH status failed: ${res.status}`);
-        return;
-      }
       setDragId(null);
       await loadEntries(setEntries);
     } catch (error) {
@@ -700,7 +586,6 @@ export default function App() {
     }
   }
 
-  // ── Computed data ───────────────────────────────────────────────────────────
   const counts = useMemo(() => {
     const c = { All: entries.length };
     STATUS.forEach(st => { c[st] = entries.filter(e => e.status === st).length; });
@@ -724,7 +609,6 @@ export default function App() {
 
   const upcoming = useMemo(() => getUpcoming(entries), [entries]);
 
-  // ── Styles ──────────────────────────────────────────────────────────────────
   const S = {
     page:      { minHeight:"100vh", background:t.bg, fontFamily:"'DM Sans','Helvetica Neue',sans-serif", color:t.text, padding:"36px 20px 80px", transition:"background 0.2s,color 0.2s" },
     wrap:      { maxWidth:860, margin:"0 auto" },
@@ -766,14 +650,11 @@ export default function App() {
     saveBtn:   { padding:"7px 16px", background:t.btnBg, color:t.btnText, border:"none", borderRadius:8, fontSize:13, fontWeight:600, cursor:"pointer" },
     cancelBtn: { padding:"7px 13px", background:"none", color:t.muted, border:`1px solid ${t.border}`, borderRadius:8, fontSize:13, cursor:"pointer" },
     empty:     { textAlign:"center", padding:"36px 0", color:t.muted, fontSize:14 },
-    // kanban
     kanban:    { display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:12, alignItems:"start" },
     kanbanCol: { background:t.kanbanCol, borderRadius:14, padding:12, minHeight:200 },
     kanbanHdr: { fontSize:12, fontWeight:700, letterSpacing:"0.6px", textTransform:"uppercase", color:t.muted, marginBottom:10, display:"flex", justifyContent:"space-between" },
     kanbanCard:{ background:t.surface, border:`1px solid ${t.border}`, borderRadius:10, padding:"11px 13px", marginBottom:8, cursor:"grab", boxShadow:t.shadow },
-    // reminder
     reminderBox: { background: dark?"#1a2a1a":"#f0fdf4", border:`1px solid ${dark?"#2a4a2a":"#bbf7d0"}`, borderRadius:12, padding:"12px 16px", marginBottom:14, display:"flex", alignItems:"flex-start", gap:10 },
-    // charts
     chartRow:  { display:"grid", gridTemplateColumns:"1fr 1fr", gap:14 },
     chartBox:  { background:t.surface, border:`1px solid ${t.border}`, borderRadius:14, padding:"18px 20px", boxShadow:t.shadow },
     bar:       (w, color) => ({ height:26, width:`${w}%`, background:color, borderRadius:5, display:"flex", alignItems:"center", paddingLeft:8, fontSize:12, fontWeight:600, color:"#fff", minWidth:28, transition:"width 0.4s" }),
@@ -788,18 +669,15 @@ export default function App() {
       <div style={S.wrap}>
         <div style={S.card}>
           <div style={S.cardTitle}>Loading…</div>
-          <p style={{ color:t.muted, fontSize:13 }}>Connecting to your backend and loading applications.</p>
+          <p style={{ color:t.muted, fontSize:13 }}>Connecting to backend...</p>
         </div>
       </div>
     </div>
   );
 
-  // ── Render ───────────────────────────────────────────────────────────────────
   return (
     <div style={S.page}>
       <div style={S.wrap}>
-
-        {/* HEADER */}
         <div style={S.header}>
           <div>
             <h1 style={S.title}>Job Tracker</h1>
@@ -817,7 +695,6 @@ export default function App() {
           </div>
         </div>
 
-        {/* STATS */}
         <div style={S.statsRow}>
           {STATUS.map(st => (
             <div key={st} style={S.statBox}>
@@ -827,7 +704,6 @@ export default function App() {
           ))}
         </div>
 
-        {/* UPCOMING INTERVIEWS REMINDER */}
         {upcoming.length > 0 && (
           <div style={S.reminderBox}>
             <span style={{ fontSize:20 }}>🔔</span>
@@ -844,7 +720,6 @@ export default function App() {
           </div>
         )}
 
-        {/* ADD FORM */}
         {showForm && (
           <div style={S.card}>
             <div style={S.cardTitle}>New Application</div>
@@ -853,33 +728,9 @@ export default function App() {
           </div>
         )}
 
-        {/* MAIN VIEW */}
-        {view === "list"   && <ListView
-          filtered={filtered}
-          search={search}
-          setSearch={setSearch}
-          filter={filter}
-          setFilter={setFilter}
-          counts={counts}
-          sort={sort}
-          setSort={setSort}
-          editId={editId}
-          editData={editData}
-          updE={updE}
-          startEdit={startEdit}
-          saveEdit={saveEdit}
-          deleteEntry={deleteEntry}
-          toggleStar={toggleStar}
-          setEditId={setEditId}
-          dark={dark}
-          t={t}
-          S={S}
-          fileRef={fileRef}
-          handleFile={handleFile}
-        />}
+        {view === "list"   && <ListView filtered={filtered} search={search} setSearch={setSearch} filter={filter} setFilter={setFilter} counts={counts} sort={sort} setSort={setSort} editId={editId} editData={editData} updE={updE} startEdit={startEdit} saveEdit={saveEdit} deleteEntry={deleteEntry} toggleStar={toggleStar} setEditId={setEditId} dark={dark} t={t} S={S} fileRef={fileRef} handleFile={handleFile} />}
         {view === "kanban" && <KanbanView entries={entries} counts={counts} dragId={dragId} setDragId={setDragId} onDrop={onDrop} S={S} t={t} />}
         {view === "charts" && <ChartsView entries={entries} counts={counts} S={S} t={t} />}
-
       </div>
     </div>
   );
