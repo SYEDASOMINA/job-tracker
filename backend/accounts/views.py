@@ -26,6 +26,11 @@ def login_view(request):
         })
     return Response({'error': 'Invalid credentials'}, status=400)
 
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def logout_view(request):
+    return Response({'message': 'Logged out'})
+
 @api_view(['GET'])
 @permission_classes([AllowAny])
 def me_view(request):
